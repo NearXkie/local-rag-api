@@ -31,11 +31,11 @@ selected_model_id = SUPPORTED_MODELS[model_display_name]
 
 # 2. Dynamic k Slider (Crucial addition!)
 k_value = st.sidebar.slider(
-    "Context Chunks (k):",
-    min_value=1,
-    max_value=20,
+    "Context Window Size:",
+    min_value=2,
+    max_value=100,
     value=5,  # Default to 5 which is a perfect balanced value
-    step=1,
+    step=2,
     help="Adjust how many distinct document passages are sent to the AI. "
          "Higher values provide more context but will slow down generation times on your CPU."
 )
@@ -53,8 +53,8 @@ except requests.exceptions.ConnectionError:
 st.sidebar.markdown("---")
 st.sidebar.markdown(
     "### CPU Performance Tip\n"
-    "With a 4-core mobile CPU, keeping **k between 3 and 6** guarantees response times under 10 seconds! "
-    "Only crank it up to 20 when searching across multiple dense books where you need wide-angle cross-referencing."
+    "With a 4-core mobile CPU, keeping **k between 5 and 20** guarantees response times under 10 seconds! "
+    "Only crank it higher when searching across multiple dense books where you need wide-angle cross-referencing."
 )
 
 # Initialize Session State Chat History
