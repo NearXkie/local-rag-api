@@ -1,0 +1,30 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python compiled files (caches)
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Local Vector Database
+# (We rebuild this locally via ingest.py, so we don't want to push gigabytes of database files to GitHub)
+chroma_db/
+
+# Local documents (optional)
+# (If your raw PDFs are private or large, we ignore the files but keep the docs/ folder)
+docs/*.pdf
+
+# Log files
+*.log
+logs/
+
+# Environment/Secret keys (if we use them later)
+.env
+
+# IDE and System Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
