@@ -42,11 +42,42 @@ def startup_event():
     except Exception as e:
         print(f"❌ Error during server startup: {e}")
 
-# Update request structure to accept dynamic 'k'
+
+def correct_query_typos(question: str, model_name: str) -> str:
+    """Uses a fast local LLM pass to correct spelling mistakes and preserve fantasy names."""
+    try:
+        # We use temperature 0.0 to keep the correction strictly deterministic and fast
+        llm = ChatOllama(model=model_name, temperature=0.0)
+        
+        correction_prompt = (
+            "You are an offline search query optimizer. Your sole task is to correct any spelling mistakes or typos "
+            "in the input search query. "
+            "Pay special attention to character names, locations, and terminology.\n\n"
+            "Rules:\n"
+            "1. If there are no spelling mistakes, return the input query exactly as-is.\n"
+            "2. Do NOT answer the question. Do NOT add explanations or pleasantries.\n"
+            "3. Return ONLY the cleaned search query.\n\n"
+            f"Input Query: {question}"
+        )
+        
+        response = llm.invoke(correction_prompt)
+        cleaned_query = response.content.strip()
+        
+        # Strips occasional wrapping quotation marks if the LLM adds them
+        if cleaned_query.startswith('"') and cleaned_query.endswith('"'):
+            cleaned_query = cleaned_query[1:-1]
+            
+        return cleaned_query
+    except Exception as e:
+        print(f"⚠️ Query auto-correction bypassed: {e}")
+        return question
+
+
+# Request & Response structures
 class QueryRequest(BaseModel):
     question: str
     model_name: str = DEFAULT_MODEL
-    k: int = 5  # Defaults to 5 if not passed in request
+    k: int = 5  
 
 class QueryResponse(BaseModel):
     answer: str
@@ -65,9 +96,18 @@ async def query_rag(request: QueryRequest):
         )
     
     try:
-        # 1. Retrieve the top 'k' chunks dynamically using similarity_search!
-        print(f"🔍 Searching database for top {request.k} chunks: '{request.question}'...")
-        relevant_docs = vector_store.similarity_search(request.question, k=request.k)
+        # 1. Silently correct typos in the user's question before search
+        print(f"🧹 Checking query for typos: '{request.question}'...")
+        cleaned_question = correct_query_typos(request.question, request.model_name)
+        
+        if cleaned_question != request.question:
+            print(f"✨ Auto-corrected query to: '{cleaned_question}'")
+        else:
+            print("✅ No typos detected.")
+
+        # 2. Retrieve the top 'k' chunks using the CLEANED question
+        print(f"🔍 Searching database for top {request.k} chunks: '{cleaned_question}'...")
+        relevant_docs = vector_store.similarity_search(cleaned_question, k=request.k)
         
         if not relevant_docs:
             return QueryResponse(
@@ -75,7 +115,7 @@ async def query_rag(request: QueryRequest):
                 sources=[]
             )
         
-        # 2. Extract context and metadata
+        # 3. Extract context and metadata
         context_blocks = []
         sources_metadata = []
         for doc in relevant_docs:
@@ -87,7 +127,7 @@ async def query_rag(request: QueryRequest):
             
         context = "\n\n---\n\n".join(context_blocks)
         
-        # 3. Assemble system prompt
+        # 4. Assemble system prompt
         system_prompt = (
             "You are an expert, precise offline assistant. Your task is to answer the user's question relying ONLY on the provided documents.\n\n"
     "CRITICAL RULES:\n"
@@ -101,7 +141,7 @@ async def query_rag(request: QueryRequest):
     "Answer (with citations):"
         )
         
-        # 4. Generate answer
+       # 5. Generate answer
         print(f"🧠 Generating response using local model '{request.model_name}'...")
         llm = ChatOllama(model=request.model_name, temperature=0.2)
         response = llm.invoke(system_prompt)
