@@ -9,7 +9,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # root-level data paths
 
 DOCS_DIR = os.path.join(BASE_DIR, "docs")
-CHROMADB_DIR = os.path.join(BASE_DIR, "chroma_db")
+CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
 
 # model configurations
 
