@@ -17,48 +17,44 @@ app = FastAPI(
     description="A lightweight, offline document assistant running completely locally."
 )
 
-# Global database connections
+# Initialize global connections
 embeddings = None
 vector_store = None
-retriever = None
 
 @app.on_event("startup")
 def startup_event():
-    global embeddings, vector_store, retriever
+    global embeddings, vector_store
     print("⚙️ Initiating startup pipeline...")
     try:
-        # 1. Run smart ingestion automatically!
+        # Run smart ingestion automatically on boot
         run_ingestion()
         
-        # 2. Establish connections to the updated database
         print("🔌 Connecting to your local ChromaDB vector store...")
         embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
         
+        # Load the database connection directly
         vector_store = Chroma(
             persist_directory=CHROMA_DIR,
             embedding_function=embeddings
         )
-        
-        # Pull top 4 context chunks for our LLM prompts
-        retriever = vector_store.as_retriever(search_kwargs={"k": 20})
         print("✅ Vector store connection established successfully!")
         
     except Exception as e:
         print(f"❌ Error during server startup: {e}")
 
-# Define the structure of incoming requests
+# Update request structure to accept dynamic 'k'
 class QueryRequest(BaseModel):
     question: str
-    model_name: str = DEFAULT_MODEL  # Defaults to "llama3.2" (3B)
+    model_name: str = DEFAULT_MODEL
+    k: int = 5  # Defaults to 5 if not passed in request
 
-# Define the structure of outgoing responses
 class QueryResponse(BaseModel):
     answer: str
     sources: list[dict]
 
 @app.post("/query", response_model=QueryResponse)
 async def query_rag(request: QueryRequest):
-    if not retriever:
+    if not vector_store:
         raise HTTPException(status_code=500, detail="Database is not connected.")
     
     allowed_models = list(SUPPORTED_MODELS.values())
@@ -69,17 +65,17 @@ async def query_rag(request: QueryRequest):
         )
     
     try:
-        # 1. Retrieve context
-        print(f"🔍 Searching database for: '{request.question}'...")
-        relevant_docs = retriever.invoke(request.question)
+        # 1. Retrieve the top 'k' chunks dynamically using similarity_search!
+        print(f"🔍 Searching database for top {request.k} chunks: '{request.question}'...")
+        relevant_docs = vector_store.similarity_search(request.question, k=request.k)
         
         if not relevant_docs:
             return QueryResponse(
-                answer="I couldn't find any relevant sections in the uploaded documents to answer your question.",
+                answer="I couldn't find any relevant sections in the uploaded documents.",
                 sources=[]
             )
         
-        # 2. Extract metadata
+        # 2. Extract context and metadata
         context_blocks = []
         sources_metadata = []
         for doc in relevant_docs:
@@ -91,7 +87,7 @@ async def query_rag(request: QueryRequest):
             
         context = "\n\n---\n\n".join(context_blocks)
         
-        # 3. Assemble prompt
+        # 3. Assemble system prompt
         system_prompt = (
             "You are an expert, precise offline assistant. Your task is to answer the user's question relying ONLY on the provided documents.\n\n"
     "CRITICAL RULES:\n"
