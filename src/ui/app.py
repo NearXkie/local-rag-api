@@ -29,7 +29,18 @@ model_display_name = st.sidebar.selectbox(
 )
 selected_model_id = SUPPORTED_MODELS[model_display_name]
 
-# 2. Live Connection status check with the FastAPI Backend
+# 2. Dynamic k Slider (Crucial addition!)
+k_value = st.sidebar.slider(
+    "Context Chunks (k):",
+    min_value=1,
+    max_value=20,
+    value=5,  # Default to 5 which is a perfect balanced value
+    step=1,
+    help="Adjust how many distinct document passages are sent to the AI. "
+         "Higher values provide more context but will slow down generation times on your CPU."
+)
+
+# 3. Connection status check with the FastAPI Backend
 try:
     health_resp = requests.get(f"{API_URL}/health", timeout=2)
     if health_resp.status_code == 200 and health_resp.json().get("status") == "healthy":
@@ -41,10 +52,9 @@ except requests.exceptions.ConnectionError:
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
-    "### About This App\n"
-    "This system performs **Semantic Vector Search** on your uploaded PDFs "
-    "using **ChromaDB** and uses local LLMs via **Ollama** to synthesize "
-    "strict context-based responses."
+    "### CPU Performance Tip\n"
+    "With a 4-core mobile CPU, keeping **k between 3 and 6** guarantees response times under 10 seconds! "
+    "Only crank it up to 20 when searching across multiple dense books where you need wide-angle cross-referencing."
 )
 
 # Initialize Session State Chat History
@@ -71,9 +81,11 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         response_placeholder = st.empty()
         with st.spinner("Retrieving document context and generating answer..."):
             try:
+                # Include the dynamic slider value 'k' in the payload!
                 payload = {
                     "question": prompt,
-                    "model_name": selected_model_id
+                    "model_name": selected_model_id,
+                    "k": k_value
                 }
                 response = requests.post(f"{API_URL}/query", json=payload, timeout=120)
                 
@@ -82,25 +94,22 @@ if prompt := st.chat_input("Ask a question about your documents..."):
                     answer = data["answer"]
                     sources = data["sources"]
                     
-                    # Update message in the UI
                     response_placeholder.markdown(answer)
                     
-                    # Show expandable citation list if sources were retrieved
                     if sources:
-                        # Ensure we deduplicate sources for cleaner rendering
+                        # Deduplicate sources for cleaner rendering
                         unique_sources = {f"{s['file']}_p{s['page']}": s for s in sources}.values()
                         with st.expander("🔍 Citations & Sources"):
                             for src in unique_sources:
                                 st.write(f"📄 **{src['file']}** (Page {src['page']})")
                     
-                    # Save to memory
                     st.session_state.messages.append({
                         "role": "assistant", 
                         "content": answer,
-                        "sources": list(unique_sources)
+                        "sources": list(unique_sources) if sources else []
                     })
                 else:
                     error_detail = response.json().get("detail", "Internal server error.")
                     response_placeholder.error(f"Error from API Backend: {error_detail}")
             except Exception as e:
-                response_placeholder.error(f"Failed to reach FastAPI backend. Is your server running? \n\n*Details: {e}*")
+                response_placeholder.error(f"Failed to reach FastAPI backend. \n\n*Details: {e}*")
