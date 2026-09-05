@@ -1,5 +1,3 @@
-
-
 import os
 import glob
 from langchain_community.document_loaders import PyPDFLoader # pyright: ignore[reportMissingImports]
@@ -10,31 +8,29 @@ from langchain_community.vectorstores import Chroma # pyright: ignore[reportMiss
 # Import central settings from config
 from src.config import DOCS_DIR, CHROMA_DIR, EMBEDDING_MODEL
 
-def get_indexed_files(vector_store) -> set:
-    """Helper function to extract unique PDF filenames already recorded in ChromaDB metadata."""
+def get_db_data(vector_store) -> tuple[set, list[str], list[dict]]:
+    """Helper to extract indexed filenames, document IDs, and metadatas from ChromaDB."""
     try:
-        # Retrieve all items from the collection
         collection_data = vector_store.get()
         indexed_filenames = set()
+        ids = collection_data.get("ids", [])
+        metadatas = collection_data.get("metadatas", [])
         
-        if collection_data and "metadatas" in collection_data:
-            for metadata in collection_data["metadatas"]:
+        if metadatas:
+            for metadata in metadatas:
                 if metadata and "source" in metadata:
-                    # Extracts 'the_way_of_kings.pdf' from the absolute path
                     indexed_filenames.add(os.path.basename(metadata["source"]))
-        return indexed_filenames
+        return indexed_filenames, ids, metadatas
     except Exception as e:
-        print(f"⚠️ Could not check indexed documents in vector database: {e}")
-        return set()
+        print(f"⚠️ Could not read active vector database: {e}")
+        return set(), [], []
 
 def run_ingestion(force_rebuild=False):
     print("🔍 Scanning local document folder and database status...")
 
-    # 1. Find all PDFs in the docs/ directory
+    # 1. Locate current physical PDFs in /docs
     pdf_files = glob.glob(os.path.join(DOCS_DIR, "*.pdf"))
-    if not pdf_files:
-        print(f"⚠️ No PDFs found in '{DOCS_DIR}'. Database is idle.")
-        return
+    current_filenames = {os.path.basename(path) for path in pdf_files}
 
     # 2. Check connection to Ollama Embeddings
     try:
@@ -44,38 +40,61 @@ def run_ingestion(force_rebuild=False):
         print("💡 Ensure that the Ollama app is running on your system!")
         return
 
-    # 3. Determine which files are new
+    # 3. Determine database status and handle synchronization
     db_exists = os.path.exists(CHROMA_DIR) and len(os.listdir(CHROMA_DIR)) > 0
     vector_store = None
     files_to_ingest = []
 
     if db_exists and not force_rebuild:
-        # Load the existing database
+        # Load active database
         vector_store = Chroma(
             persist_directory=CHROMA_DIR,
             embedding_function=embeddings
         )
-        indexed_files = get_indexed_files(vector_store)
+        indexed_files, db_ids, db_metadatas = get_db_data(vector_store)
         
-        # Compare physical files against what is in ChromaDB
+        # --- SYNCHRONIZATION: DELETE REMOVED PDFS ---
+        ids_to_purge = []
+        purged_files = set()
+        
+        for doc_id, meta in zip(db_ids, db_metadatas):
+            if meta and "source" in meta:
+                source_file = os.path.basename(meta["source"])
+                if source_file not in current_filenames:
+                    ids_to_purge.append(doc_id)
+                    purged_files.add(source_file)
+                    
+        if ids_to_purge:
+            print(f"🗑️ Detected deleted PDFs: {list(purged_files)}")
+            print(f"🧹 Surgically purging {len(ids_to_purge)} orphaned chunks from ChromaDB...")
+            try:
+                vector_store.delete(ids=ids_to_purge)
+                print("✅ Orphaned database entries successfully deleted!")
+                # Re-fetch remaining index status
+                indexed_files, _, _ = get_db_data(vector_store)
+            except Exception as e:
+                print(f"❌ Failed to delete chunks from ChromaDB: {e}")
+        # ---------------------------------------------
+
+        # Compare remaining indexed items to see if there is any new work to do
         for pdf_path in pdf_files:
             filename = os.path.basename(pdf_path)
             if filename not in indexed_files:
                 files_to_ingest.append(pdf_path)
-                print(f"🆕 Found new document: '{filename}'")
+                print(f"🆕 Found new document to index: '{filename}'")
             else:
                 print(f"✅ Already indexed: '{filename}'")
     else:
-        # Database doesn't exist or we forced a clean install
+        # DB does not exist, everything in /docs needs indexing
         files_to_ingest = pdf_files
         print("🆕 Database not found. Building completely from scratch...")
 
-    # 4. If everything is indexed, exit early!
+    # 4. If there is nothing to ingest and we cleaned up, we can exit early!
     if not files_to_ingest:
-        print("✨ Database is 100% up-to-date. No new PDFs to ingest!")
+        print("✨ Database is 100% synchronized with your '/docs' folder!")
         return
 
-    # 5. Load and parse only the new documents
+    # 5. Parse and slice the new books
     all_documents = []
     for pdf_path in files_to_ingest:
         print(f"📄 Loading: {os.path.basename(pdf_path)}...")
@@ -88,7 +107,6 @@ def run_ingestion(force_rebuild=False):
             print(f"❌ Error loading {os.path.basename(pdf_path)}: {e}")
             return
 
-    # 6. Split text into semantic chunks
     print("✂️ Splitting documents into semantic chunks...")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -98,7 +116,7 @@ def run_ingestion(force_rebuild=False):
     total_chunks = len(chunks)
     print(f"✅ Created {total_chunks} distinct chunks.")
 
-    # 7. Add document chunks to Chroma in safe, CPU-friendly batches of 100
+    # 6. Append new chunks to ChromaDB in safe batches of 100
     print(f"💾 Saving new chunks to database at '{CHROMA_DIR}'...")
     try:
         if vector_store is None:
